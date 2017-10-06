@@ -1,4 +1,4 @@
-__author__ = "Matthew Callaway <mcallawa@genome.wustl.edu>"
+__author__ = "Scott Abbott"
 __license__ = "GPL License"
-__version__ = "2.1.9"
+__version__ = "3.0"
 from jiraclient import Jiraclient

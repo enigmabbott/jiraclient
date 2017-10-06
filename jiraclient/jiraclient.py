@@ -3,21 +3,7 @@
 # jiraclient.py
 #
 # A Python Jira REST Client
-#
-# (C) 2007,2008,2009,2010,2011,2012: Matthew Callaway
-#
-# jiraclient is free software; you can redistribute it and/or modify it under
-# the terms of the GNU General Public License as published by the Free Software
-# Foundation; either version 2, or (at your option) any later version.
-#
-# jiraclient.py is distributed in the hope that it will be useful, but WITHOUT
-# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-# FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
-# details.
-#
-# You may have received a copy of the GNU General Public License along with
-# jiraclient.py.  If not, write to the Free Software Foundation, Inc., 59
-# Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
 
 import getpass
 import os
@@ -27,80 +13,15 @@ import sys
 import logging, inspect, logging.handlers
 import stat
 from optparse import OptionParser
+
 import ConfigParser
 import json
 import base64
 import datetime
 import itertools
-from restkit import Resource
-from restkit.errors import Unauthorized
+import jira
 
 pp = pprint.PrettyPrinter(indent=4)
-time_rx = re.compile('^\d+[mhdw]$')
-session_rx = re.compile("session timed out")
-
-def time_is_valid(value):
-  m = time_rx.search(value)
-  if not m:
-    return False
-  return True
-
-class IndentFormatter(logging.Formatter):
-    def __init__( self, fmt=None, datefmt=None ):
-        logging.Formatter.__init__(self, fmt, datefmt)
-        self.baseline = len(inspect.stack())
-    def format( self, rec ):
-        stack = inspect.stack()
-        rec.indent = ' '*(len(stack)-self.baseline)
-        rec.function = stack[8][3]
-        out = logging.Formatter.format(self, rec)
-        del rec.indent; del rec.function
-        return out
-
-class Issue(object):
-
-  def __init__(self):
-    self.summary      = ''
-    self.environment  = ''
-    self.description  = ''
-    self.duedate      = ''
-    self.project      = { 'id': None }
-    self.issuetype    = { 'id': None }
-    self.assignee     = { 'name': None }
-    self.priority     = { 'id': None }
-    self.parent       = { 'key': None }
-    self.timetracking = { 'originalEstimate': None }
-    self.labels       = []
-    self.versions     = [ { 'id': None } ]
-    self.fixVersions  = [ { 'id': None } ]
-    self.components   = [ { 'id': None } ]
-
-  def __repr__(self):
-    text = "%s(" % (self.__class__.__name__)
-    for attr in dir(self):
-      if attr.startswith('_'): continue
-      a = getattr(self,attr)
-      if callable(a): continue
-      text += "%s=%r," % (attr,a)
-    text += ")"
-    return text
-
-class SearchableDict(dict):
-  def find_key(self,val):
-      """return the key of dictionary dic given the value"""
-      for k, v in self.iteritems():
-          if v == val:
-              return k
-          if isinstance(v,dict):
-              if v['name'] == val:
-                  return k
-      else:
-          return None
-
-  def find_value(self,key):
-      """return the value of dictionary dic given the key"""
-      if self.has_key(key): return self[key]
-      else: return None
 
 class Jiraclient(object):
   version = "2.1.9"
@@ -134,18 +55,8 @@ class Jiraclient(object):
     usage = """%prog [options]
 
  Sample Usage:
-  - Standard issue creation in project named INFOSYS:
-    jiraclient.py -u 'username' -p 'jirapassword' -A 'auser' -P INFOSYS -T task -S 'Do some task'
+   jiraclient.py --template myyaml.yaml
 
- - Get numerical Version IDs for Project named INFOSYS:
-   jiraclient.py -u 'username' -p 'jirapassword' -a getVersions INFOSYS
-
- - Get numerical Component IDs for Project named INFOSYS:
-   jiraclient.py -u 'username' -p 'jirapassword' -a getComponents INFOSYS
-
- - Create an issue with a specified Component and Fix Version 
-   and assign it to myself:
-   jiraclient.py -u 'username' -p 'jirapassword' -A 'username' -P INFOSYS -Q major -F 10000  -C 10003 -T epic -S 'Investigate Platform IFS'
 """
     optParser = OptionParser(usage)
     optParser.add_option(
@@ -155,6 +66,7 @@ class Jiraclient(object):
       help="Read configuration from this file",
       default=os.path.join(os.environ["HOME"],'.jiraclientrc'),
     )
+
     optParser.add_option(
       "--sessionfile",
       action="store",
@@ -162,34 +74,7 @@ class Jiraclient(object):
       help="Store authentication token in this file",
       default=os.path.join(os.environ["HOME"],'.jira-session'),
     )
-    optParser.add_option(
-      "-a","--api",
-      action="store",
-      dest="api",
-      help="Call this API method",
-      default=None,
-    )
-    optParser.add_option(
-      "--jsondata",
-      action="store",
-      dest="jsondata",
-      help="JSON data for use with the API option",
-      default=None,
-    )
-    optParser.add_option(
-      "--method",
-      action="store",
-      dest="method",
-      help="HTTP method for use with the API option",
-      default="get",
-    )
-    optParser.add_option(
-      "-c","--comment",
-      action="store",
-      dest="comment",
-      help="Comment text",
-      default=None,
-    )
+
     optParser.add_option(
       "-l","--loglevel",
       type="choice",
@@ -198,27 +83,7 @@ class Jiraclient(object):
       help="Set the log level",
       default="INFO",
     )
-    optParser.add_option(
-      "--labels",
-      action="store",
-      dest="labels",
-      help="Comma separated list of labels to apply to new issue",
-      default=None,
-    )
-    optParser.add_option(
-      "--link",
-      action="store",
-      dest="link",
-      help="Given link=A,linkType,B links issues A and B with the named link type (eg. Depends)",
-      default=None,
-    )
-    optParser.add_option(
-      "--unlink",
-      action="store",
-      dest="unlink",
-      help="Given link=A,linkType,B unlinks issues A and B with the named link type (eg. Depends)",
-      default=None,
-    )
+
     optParser.add_option(
       "--template",
       action="store",
@@ -226,13 +91,7 @@ class Jiraclient(object):
       help="Make a set of Issues based on a YAML template file",
       default=None,
     )
-    optParser.add_option(
-      "--norcfile",
-      action="store_true",
-      dest="norcfile",
-      help="Do not parse issue defaults when using --template",
-      default=False,
-    )
+
     optParser.add_option(
       "-n","--noop",
       action="store_true",
@@ -240,13 +99,7 @@ class Jiraclient(object):
       help="Do everything locally, never call to the remote API",
       default=False,
     )
-    optParser.add_option(
-      "--nopost",
-      action="store_true",
-      dest="nopost",
-      help="Do everything except POST and PUT methods, ie. no creation events",
-      default=False,
-    )
+
     optParser.add_option(
       "-u","--user",
       action="store",
@@ -254,6 +107,7 @@ class Jiraclient(object):
       help="Jira user",
       default=None,
     )
+
     optParser.add_option(
       "-p","--password",
       action="store",
@@ -261,195 +115,7 @@ class Jiraclient(object):
       help="Jira password",
       default=None,
     )
-    optParser.add_option(
-      "-d","--display",
-      action="store_true",
-      dest="display",
-      help="Display an existing given Jira issue ID",
-      default=False,
-    )
-    optParser.add_option(
-      "-i","--issue",
-      action="store",
-      dest="issueID",
-      help="Jira issue ID (to modify)",
-      default=None,
-    )
-    optParser.add_option(
-      "-r","--remaining",
-      action="store",
-      dest="remaining",
-      help="Jira issue time 'remaining estimate'",
-      default=None,
-    )
-    optParser.add_option(
-      "-s","--spent",
-      action="store",
-      dest="timespent",
-      help="Jira issue 'time spent'",
-      default=None,
-    )
-    optParser.add_option(
-      "-R","--resolve",
-      action="store",
-      dest="resolve",
-      help="Resolve issue with the given resolution, eg: 'fixed','incomplete',etc.",
-      default=None,
-    )
-    optParser.add_option(
-      "-t","--timetracking",
-      action="store",
-      dest="timetracking",
-      help="Jira issue time 'original estimate'",
-      default=None,
-    )
-    optParser.add_option(
-      "-A","--assignee",
-      action="store",
-      dest="assignee",
-      help="Jira assignee",
-      default=None,
-    )
-    optParser.add_option(
-      "-C","--components",
-      action="store",
-      dest="components",
-      help="Jira project components, comma separated list",
-      default=None,
-    )
-    optParser.add_option(
-      "-D","--description",
-      action="store",
-      dest="description",
-      help="Jira issue description text",
-      default=None,
-    )
-    optParser.add_option(
-      "-E","--environment",
-      action="store",
-      dest="environment",
-      help="Jira environment",
-      default=None,
-    )
-    optParser.add_option(
-      "-F","--fixVersions",
-      action="store",
-      dest="fixVersions",
-      help="Jira project 'fix versions', comma separated list",
-      default=None,
-    )
-    optParser.add_option(
-      "-H","--epic-theme",
-      action="store",
-      dest="epic_theme",
-      help="Set the epic/theme for the issue",
-      default=None,
-    )
-    optParser.add_option(
-      "--epic-link",
-      action="store",
-      dest="epic_link",
-      help="Set the Epic Link for the issue",
-      default=None,
-    )
-    optParser.add_option(
-      "--epic-name",
-      action="store",
-      dest="epic_name",
-      help="Set the epic name for the issue",
-      default=None,
-    )
-    optParser.add_option(
-      "-P","--project",
-      action="store",
-      dest="project",
-      help="Jira project",
-      default=None,
-    )
-    optParser.add_option(
-      "-Q","--priority",
-      action="store",
-      dest="priority",
-      help="Issue priority name",
-      default=None,
-    )
-    optParser.add_option(
-      "-S","--summary",
-      action="store",
-      dest="summary",
-      help="Issue summary",
-      default=None,
-    )
-    optParser.add_option(
-      "-T","--issuetype",
-      action="store",
-      dest="issuetype",
-      help="Issue type",
-      default=None,
-    )
-    optParser.add_option(
-      "-U","--jiraurl",
-      action="store",
-      dest="jiraurl",
-      help="The Jira URL",
-      default=None,
-    )
-    optParser.add_option(
-      "-V","--affecstVersions",
-      action="store",
-      dest="affectsVersions",
-      help="Jira project 'affects versions', comma separated list",
-      default=None,
-    )
-    optParser.add_option(
-      "--parent",
-      action="store",
-      dest="parent",
-      help="Make the given issue a subtask of this issue key",
-      default=None,
-    )
-    optParser.add_option(
-      "--prefix",
-      action="store",
-      dest="prefix",
-      help="Specify prefix text to prepend to all Issue summaries",
-      default=None,
-    )
-    optParser.add_option(
-      "--syslog",
-      action="store_true",
-      dest="use_syslog",
-      help="Use syslog",
-      default=False,
-    )
-    optParser.add_option(
-      "-v","--version",
-      action="store_true",
-      dest="version",
-      help="Version information",
-      default=False,
-    )
-    optParser.add_option(
-      "-w","--worklog",
-      action="store",
-      dest="worklog",
-      help="Log work with this given text string, use this in conjunction with --spent and --remaining",
-      default=None,
-    )
-    optParser.add_option(
-      "--delete",
-      action="store_true",
-      dest="delete",
-      help="Delete the issue specified by --issue",
-      default=False,
-    )
-    optParser.add_option(
-      "--itservice",
-      action="store",
-      dest="itservice",
-      help="Set the 'IT Service' for the issue",
-      default=None,
-    )
+
     (self.options, self.args) = optParser.parse_args()
 
   def prepare_logger(self):
@@ -517,6 +183,7 @@ class Jiraclient(object):
     self.logger.debug("read issue defaults %s" % self.options.config)
     parser = ConfigParser.ConfigParser()
     parser.optionxform = str
+
     try:
       parser.readfp(file(self.options.config,'r'))
     except ConfigParser.ParsingError:
@@ -528,52 +195,9 @@ class Jiraclient(object):
       self.logger.debug("take value %s for %s from rc file" % (v,k))
       setattr(self.options,k,v)
 
-  def call_api(self,method,uri,payload=None,full=False):
-    self.proxy.uri = "%s/%s" % (self.options.jiraurl, uri)
-    call = getattr(self.proxy,method)
-    headers = {'Content-Type' : 'application/json'}
-    if self.token is not None:
-      headers['Authorization'] = 'Basic %s' % self.token
-    if self.cookie is not None:
-      headers['Cookie'] = '%s' % self.cookie
-
-    self.logger.debug("Call API: %s %s/%s payload=%s headers=%s" % (method,self.options.jiraurl,uri,payload,headers))
-    if self.options.noop:
-      self.logger.debug("NOOP mode, return before API call")
-      return {}
-    elif self.options.nopost and ( method.lower() == 'post' or method.lower() == 'put' ):
-      self.logger.debug("NOPOST mode, return before API call")
-      return {}
-
-    try:
-      response = call(headers=headers,payload=payload)
-    except Unauthorized:
-      if os.path.exists(self.options.sessionfile):
-        os.unlink(self.options.sessionfile)
-      return None
-    except Exception,msg:
-      self.fatal("Unhandled API exception for method: %s: %s" % (self.proxy.uri,msg))
-
-    self.logger.debug("Response: %s" % (response.status_int))
-    if full:
-      return response
-    try:
-      data = json.loads(response.body_string())
-      return data
-    except ValueError:
-      return {}
-
-  def get_project_id(self,projectKey):
-    if self.maps['project']: return
-    if self.options.noop:
-      self.maps['project']['0'] = 'noop'
-      return
-    uri = "%s/%s" % ('rest/api/latest/project', projectKey)
-    data = self.call_api("get",uri)
-    self.maps['project'][str(data["id"])] = projectKey.lower()
-
   def get_issue_types(self,projectKey):
     if self.maps['issuetype']: return
+
     if self.options.noop:
       # minimal set of issue types for tests to work
       self.maps['issuetype']['1'] = 'epic'
